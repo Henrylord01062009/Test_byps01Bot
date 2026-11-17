@@ -8,53 +8,45 @@ TOKEN = os.environ["BOT_TOKEN"]
 API = f"https://api.telegram.org/bot{TOKEN}"
 MAX_IMAGES = 5
 
-# (button name, words added to the prompt). Add more styles here, one line each.
-STYLES = [
-    ("Painted Anime", "painted anime style"),
-    ("Casual Photo", "casual photo, natural lighting"),
-    ("Cinematic", "cinematic, dramatic lighting, film still"),
-    ("Digital Painting", "digital painting"),
-    ("Concept Art", "concept art"),
-    ("No style", ""),
-    ("3D Disney Character", "3D Disney character style"),
-    ("2D Disney Character", "2D Disney character style"),
-    ("Disney Sketch", "Disney style sketch"),
-    ("Concept Sketch", "concept sketch"),
-    ("Painterly", "painterly style"),
-    ("MTG Card", "magic the gathering card, incredible magic the gathering artwork"),
-]
-
-SHAPES = {
-    "sq": (768, 768, "Square"),
-    "po": (512, 768, "Portrait"),
-    "la": (768, 512, "Landscape"),
+# Style name (lowercase) -> words added to the prompt
+STYLES = {
+    "painted anime": "painted anime style",
+    "casual photo": "casual photo, natural lighting",
+    "cinematic": "cinematic, dramatic lighting, film still",
+    "digital painting": "digital painting",
+    "concept art": "concept art",
+    "no style": "",
+    "3d disney character": "3D Disney character style",
+    "2d disney character": "2D Disney character style",
+    "disney sketch": "Disney style sketch",
+    "concept sketch": "concept sketch",
+    "painterly": "painterly style",
+    "mtg card": "magic the gathering card, incredible magic the gathering artwork",
 }
 
-pending = {}  # chat_id -> {"prompt", "style", "shape"}
+SHAPES = {
+    "square": (768, 768),
+    "portrait": (512, 768),
+    "landscape": (768, 512),
+}
+
+HELP = (
+    "Send a request like this:\n"
+    "/image a cat wearing a saree | cinematic | portrait | 2\n\n"
+    "Parts after the description are optional, in any order:\n"
+    "- style: see /styles (default: no style)\n"
+    "- shape: square, portrait, landscape (default: square)\n"
+    "- count: 1 to 5 (default: 1)\n\n"
+    "Replies arrive within about 30 minutes."
+)
 
 
 def tg(method, **kwargs):
-    return requests.post(f"{API}/{method}", json=kwargs, timeout=120).json()
+    return requests.post(f"{API}/{method}", json=kwargs, timeout=60).json()
 
 
-def send_text(chat_id, text, keyboard=None):
-    data = {"chat_id": chat_id, "text": text}
-    if keyboard:
-        data["reply_markup"] = {"inline_keyboard": keyboard}
-    tg("sendMessage", **data)
-
-
-def style_keyboard():
-    buttons = [{"text": name, "callback_data": f"s{i}"} for i, (name, _) in enumerate(STYLES)]
-    return [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-
-
-def shape_keyboard():
-    return [[{"text": name, "callback_data": f"h{key}"} for key, (_, _, name) in SHAPES.items()]]
-
-
-def count_keyboard():
-    return [[{"text": str(n), "callback_data": f"n{n}"} for n in range(1, MAX_IMAGES + 1)]]
+def send_text(chat_id, text):
+    tg("sendMessage", chat_id=chat_id, text=text)
 
 
 def send_photo(chat_id, image_bytes, caption):
@@ -72,7 +64,7 @@ def make_image(prompt, style_words, width, height):
     params = {
         "width": width,
         "height": height,
-        "seed": random.randint(1, 999999),  # different seed = different picture each time
+        "seed": random.randint(1, 999999),
         "nologo": "true",
     }
     r = requests.get(url, params=params, timeout=180)
@@ -82,67 +74,74 @@ def make_image(prompt, style_words, width, height):
 
 def handle_message(msg):
     chat_id = msg["chat"]["id"]
-    text = msg.get("text", "").strip()
+    text = (msg.get("text") or "").strip()
 
-    if text.startswith("/image"):
-        prompt = text[len("/image"):].strip()
-        if not prompt:
-            send_text(chat_id, "Please add a description, e.g. /image a cat wearing a saree")
-            return
-        pending[chat_id] = {"prompt": prompt, "style": None, "shape": None}
-        send_text(chat_id, "Choose an art style:", style_keyboard())
-
-    elif text.startswith("/styles"):
-        names = "\n".join(f"• {name}" for name, _ in STYLES)
+    if text.startswith("/styles"):
+        names = "\n".join(f"• {name.title()}" for name in STYLES)
         send_text(chat_id, "Available styles:\n" + names)
-
-    else:
-        send_text(chat_id,
-                  "Send /image followed by a description, e.g. /image sunset over Chennai beach\n"
-                  "Send /styles to see all art styles.")
-
-
-def handle_callback(cb):
-    tg("answerCallbackQuery", callback_query_id=cb["id"])
-    chat_id = cb["message"]["chat"]["id"]
-    data = cb.get("data", "")
-
-    if chat_id not in pending:
-        send_text(chat_id, "Please send /image and a description first.")
         return
 
-    if data.startswith("s"):
-        pending[chat_id]["style"] = int(data[1:])
-        send_text(chat_id, "Choose a shape:", shape_keyboard())
+    if not text.startswith("/image"):
+        send_text(chat_id, HELP)
+        return
 
-    elif data.startswith("h"):
-        pending[chat_id]["shape"] = data[1:]
-        send_text(chat_id, "How many images do you want?", count_keyboard())
+    body = text[len("/image"):].strip()
+    if not body:
+        send_text(chat_id, "Please add a description.\n\n" + HELP)
+        return
 
-    elif data.startswith("n"):
-        info = pending.pop(chat_id)
-        style_name, style_words = STYLES[info["style"]]
-        width, height, shape_name = SHAPES[info["shape"]]
-        count = int(data[1:])
-        send_text(chat_id, f"Creating {count} image(s) in '{style_name}' style, {shape_name}, please wait...")
-        for n in range(1, count + 1):
-            try:
-                send_photo(chat_id,
-                           make_image(info["prompt"], style_words, width, height),
-                           f"{info['prompt']} ({style_name}) {n}/{count}")
-            except Exception as e:
-                send_text(chat_id, f"Image {n} failed: {e}")
-                break
+    parts = [p.strip() for p in body.split("|")]
+    prompt = parts[0]
+    style = "no style"
+    shape = "square"
+    count = 1
+
+    for part in parts[1:]:
+        key = part.lower()
+        if key in STYLES:
+            style = key
+        elif key in SHAPES:
+            shape = key
+        elif key.isdigit():
+            count = max(1, min(MAX_IMAGES, int(key)))
+        else:
+            send_text(chat_id, f"Ignored '{part}' (not a style, shape, or number).")
+
+    width, height = SHAPES[shape]
+    style_words = STYLES[style]
+    send_text(chat_id, f"Got it. Making {count} image(s), {style.title()}, {shape}. "
+                       "This can take a few minutes after the next check.")
+
+    for n in range(1, count + 1):
+        try:
+            img = make_image(prompt, style_words, width, height)
+            send_photo(chat_id, img, f"{prompt} ({style.title()}) {n}/{count}")
+        except Exception as e:
+            send_text(chat_id, f"Image {n} failed: {e}")
+            break
 
 
-offset = None
-while True:
-    updates = requests.get(f"{API}/getUpdates",
-                           params={"timeout": 30, "offset": offset},
-                           timeout=40).json()
-    for u in updates.get("result", []):
-        offset = u["update_id"] + 1
+def main():
+    # Telegram keeps unconfirmed messages for 24 hours. Fetch them all,
+    # process them, then confirm them so the next run skips them.
+    data = requests.get(f"{API}/getUpdates", params={"timeout": 0}, timeout=60).json()
+    updates = data.get("result", [])
+    if not updates:
+        print("No new messages.")
+        return
+
+    for u in updates:
         if "message" in u:
-            handle_message(u["message"])
-        elif "callback_query" in u:
-            handle_callback(u["callback_query"])
+            try:
+                handle_message(u["message"])
+            except Exception as e:
+                print(f"Error handling update {u['update_id']}: {e}")
+
+    last_id = updates[-1]["update_id"]
+    requests.get(f"{API}/getUpdates",
+                 params={"offset": last_id + 1, "timeout": 0}, timeout=60)
+    print(f"Processed {len(updates)} message(s).")
+
+
+if __name__ == "__main__":
+    main()
